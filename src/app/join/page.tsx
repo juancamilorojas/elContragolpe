@@ -48,13 +48,18 @@ export default function JoinPage() {
 
     const loadMatches = useCallback(async (restId: string) => {
         // Load matches that are open, live, or finished (NOT draft or archived)
-        const { data } = await supabase
+        console.log('Loading matches for restaurant:', restId)
+        const { data, error: matchErr } = await supabase
             .from('matches')
             .select('id, home_team, away_team, status, home_score, away_score, created_at')
             .eq('restaurant_id', restId)
             .in('status', ['open', 'live', 'finished'])
             .order('created_at', { ascending: false })
 
+        console.log('Matches result:', { data, error: matchErr })
+        if (matchErr) {
+            console.error('Error loading matches:', matchErr)
+        }
         setMatches(data || [])
     }, [supabase])
 
