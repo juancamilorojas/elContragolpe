@@ -12,8 +12,6 @@ interface Match {
     home_team: string
     away_team: string
     status: string
-    home_score: number
-    away_score: number
     created_at: string
 }
 
@@ -51,9 +49,9 @@ export default function JoinPage() {
         console.log('Loading matches for restaurant:', restId)
         const { data, error: matchErr } = await supabase
             .from('matches')
-            .select('id, home_team, away_team, status, home_score, away_score, created_at')
+            .select('id, home_team, away_team, status, created_at')
             .eq('restaurant_id', restId)
-            .in('status', ['open', 'live', 'finished'])
+            .or('status.eq.open,status.eq.live,status.eq.finished')
             .order('created_at', { ascending: false })
 
         console.log('Matches result:', { data, error: matchErr })
@@ -537,7 +535,7 @@ export default function JoinPage() {
                                                         color: 'var(--color-text-muted)',
                                                         fontWeight: 500,
                                                     }}>
-                                                        {match.status === 'open' ? 'vs' : `${match.home_score} - ${match.away_score}`}
+                                                        vs
                                                     </span>
                                                     <span style={{
                                                         fontSize: 'var(--font-size-lg)',
