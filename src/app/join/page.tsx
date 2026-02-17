@@ -27,60 +27,6 @@ export default function JoinPage() {
 
     const supabase = getSupabaseClient()
 
-    // Initialize: anonymous sign-in + load restaurant
-    useEffect(() => {
-        async function init() {
-            try {
-                const user = await signInAnonymously()
-                if (!user) {
-                    setError('Could not connect. Please try again.')
-                    return
-                }
-
-                // Get restaurant from URL params
-                const params = new URLSearchParams(window.location.search)
-                const slug = params.get('r') || 'demo'
-
-                const { data: restaurant, error: restErr } = await supabase
-                    .from('restaurants')
-                    .select('id, name')
-                    .eq('slug', slug)
-                    .single()
-
-                if (restErr || !restaurant) {
-                    setError('Restaurant not found. Please scan the QR code again.')
-                    return
-                }
-
-                setRestaurantId(restaurant.id)
-                setRestaurantName(restaurant.name)
-
-                // Check if player already exists for this auth user
-                const { data: existingPlayer } = await supabase
-                    .from('players')
-                    .select('id, active_match_id')
-                    .eq('auth_user_id', user.id)
-                    .eq('restaurant_id', restaurant.id)
-                    .single()
-
-                if (existingPlayer) {
-                    // Player already registered, go directly to game
-                    setStep('done')
-                    redirectToGame(existingPlayer.active_match_id)
-                    return
-                }
-
-                // Load tables
-                await loadTables(restaurant.id)
-                setStep('name')
-            } catch (err) {
-                setError('Something went wrong. Please try again.')
-                console.error(err)
-            }
-        }
-        init()
-    }, [])
-
     const loadTables = useCallback(async (restId: string) => {
         const { data } = await supabase
             .from('tables')
@@ -91,6 +37,61 @@ export default function JoinPage() {
 
         setTables(data || [])
     }, [supabase])
+
+    // Initialize: anonymous sign-in + load restaurant
+    const init = useCallback(async () => {
+        setError('')
+        setStep('loading')
+        try {
+            const user = await signInAnonymously()
+            if (!user) {
+                setError('No se pudo conectar. Verifica que Anonymous Sign-Ins esté habilitado en Supabase Auth.')
+                return
+            }
+
+            // Get restaurant from URL params
+            const params = new URLSearchParams(window.location.search)
+            const slug = params.get('r') || 'demo'
+
+            const { data: restaurant, error: restErr } = await supabase
+                .from('restaurants')
+                .select('id, name')
+                .eq('slug', slug)
+                .single()
+
+            if (restErr || !restaurant) {
+                setError(`Restaurante no encontrado (slug: "${slug}"). Verifica la base de datos.`)
+                return
+            }
+
+            setRestaurantId(restaurant.id)
+            setRestaurantName(restaurant.name)
+
+            // Check if player already exists for this auth user
+            const { data: existingPlayer } = await supabase
+                .from('players')
+                .select('id, active_match_id')
+                .eq('auth_user_id', user.id)
+                .eq('restaurant_id', restaurant.id)
+                .single()
+
+            if (existingPlayer) {
+                // Player already registered, go directly to game
+                setStep('done')
+                redirectToGame(existingPlayer.active_match_id)
+                return
+            }
+
+            // Load tables
+            await loadTables(restaurant.id)
+            setStep('name')
+        } catch (err: any) {
+            setError(`Error: ${err?.message || 'Something went wrong. Please try again.'}`)
+            console.error('Join init error:', err)
+        }
+    }, [supabase, loadTables])
+
+    useEffect(() => { init() }, [init])
 
     const redirectToGame = (matchId: string | null) => {
         if (matchId) {
@@ -210,8 +211,25 @@ export default function JoinPage() {
         return (
             <div className="page">
                 <div className="loading-screen">
-                    <div className="spinner spinner--lg" />
-                    <p>Connecting...</p>
+                    {!error ? (
+                        <>
+                            <div className="spinner spinner--lg" />
+                            <p>Conectando...</p>
+                        </>
+                    ) : (
+                        <>
+                            <p style={{ color: 'var(--color-danger)', fontSize: 'var(--font-size-sm)', textAlign: 'center', maxWidth: '400px', lineHeight: '1.5' }}>
+                                ⚠️ {error}
+                            </p>
+                            <button
+                                className="btn btn--primary"
+                                onClick={init}
+                                style={{ marginTop: 'var(--space-md)' }}
+                            >
+                                🔄 Reintentar
+                            </button>
+                        </>
+                    )}
                 </div>
             </div>
         )
