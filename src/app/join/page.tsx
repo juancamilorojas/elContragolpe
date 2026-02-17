@@ -7,12 +7,18 @@ import type { Database } from '@/types/database'
 
 type Table = Database['public']['Tables']['tables']['Row']
 
-interface JoinPageProps {
-    restaurantSlug?: string
+interface Match {
+    id: string
+    home_team: string
+    away_team: string
+    status: string
+    home_score: number
+    away_score: number
+    created_at: string
 }
 
 export default function JoinPage() {
-    const [step, setStep] = useState<'loading' | 'name' | 'table' | 'consent' | 'done'>('loading')
+    const [step, setStep] = useState<'loading' | 'name' | 'table' | 'consent' | 'matches' | 'done'>('loading')
     const [displayName, setDisplayName] = useState('')
     const [tables, setTables] = useState<Table[]>([])
     const [selectedTableId, setSelectedTableId] = useState<string | null>(null)
@@ -24,6 +30,8 @@ export default function JoinPage() {
     const [loading, setLoading] = useState(false)
     const [restaurantId, setRestaurantId] = useState<string | null>(null)
     const [restaurantName, setRestaurantName] = useState('')
+    const [matches, setMatches] = useState<Match[]>([])
+    const [isReturningPlayer, setIsReturningPlayer] = useState(false)
 
     const supabase = getSupabaseClient()
 
@@ -36,6 +44,18 @@ export default function JoinPage() {
             .order('name')
 
         setTables(data || [])
+    }, [supabase])
+
+    const loadMatches = useCallback(async (restId: string) => {
+        // Load matches that are open, live, or finished (NOT draft or archived)
+        const { data } = await supabase
+            .from('matches')
+            .select('id, home_team, away_team, status, home_score, away_score, created_at')
+            .eq('restaurant_id', restId)
+            .in('status', ['open', 'live', 'finished'])
+            .order('created_at', { ascending: false })
+
+        setMatches(data || [])
     }, [supabase])
 
     // Initialize: anonymous sign-in + load restaurant
@@ -70,45 +90,39 @@ export default function JoinPage() {
             // Check if player already exists for this auth user
             const { data: existingPlayer } = await supabase
                 .from('players')
-                .select('id, active_match_id')
+                .select('id, display_name, active_match_id')
                 .eq('auth_user_id', user.id)
                 .eq('restaurant_id', restaurant.id)
                 .single()
 
             if (existingPlayer) {
-                // Player already registered, go directly to game
-                setStep('done')
-                redirectToGame(existingPlayer.active_match_id)
+                // Returning player — skip onboarding, go to match selection
+                setDisplayName(existingPlayer.display_name)
+                setIsReturningPlayer(true)
+                await loadMatches(restaurant.id)
+                setStep('matches')
                 return
             }
 
-            // Load tables
+            // New player — start onboarding
             await loadTables(restaurant.id)
             setStep('name')
         } catch (err: any) {
-            setError(`Error: ${err?.message || 'Something went wrong. Please try again.'}`)
+            setError(`Error: ${err?.message || 'Algo salió mal. Intenta de nuevo.'}`)
             console.error('Join init error:', err)
         }
-    }, [supabase, loadTables])
+    }, [supabase, loadTables, loadMatches])
 
     useEffect(() => { init() }, [init])
-
-    const redirectToGame = (matchId: string | null) => {
-        if (matchId) {
-            window.location.href = `/play/${matchId}`
-        } else {
-            window.location.href = '/play/waiting'
-        }
-    }
 
     const handleNameSubmit = (e: React.FormEvent) => {
         e.preventDefault()
         if (!displayName.trim()) {
-            setError('Please enter your name')
+            setError('Por favor ingresa tu nombre')
             return
         }
         if (displayName.trim().length > 30) {
-            setError('Name must be 30 characters or less')
+            setError('El nombre debe tener máximo 30 caracteres')
             return
         }
         setError('')
@@ -129,9 +143,9 @@ export default function JoinPage() {
 
             if (insertErr) {
                 if (insertErr.code === '23505') {
-                    setError('A table with this name already exists')
+                    setError('Ya existe una mesa con ese nombre')
                 } else {
-                    setError('Could not create table. Try again.')
+                    setError('No se pudo crear la mesa. Intenta de nuevo.')
                 }
                 setLoading(false)
                 return
@@ -143,7 +157,7 @@ export default function JoinPage() {
             await loadTables(restaurantId)
             setStep('consent')
         } catch (err) {
-            setError('Could not create table.')
+            setError('No se pudo crear la mesa.')
         }
         setLoading(false)
     }
@@ -162,19 +176,10 @@ export default function JoinPage() {
         try {
             const { data: { session } } = await supabase.auth.getSession()
             if (!session?.user) {
-                setError('Session expired. Please refresh.')
+                setError('Sesión expirada. Recarga la página.')
                 setLoading(false)
                 return
             }
-
-            // Find active match
-            const { data: activeMatch } = await supabase
-                .from('matches')
-                .select('id')
-                .eq('restaurant_id', restaurantId)
-                .or('status.eq.open,status.eq.live')
-                .limit(1)
-                .single()
 
             const { error: insertErr } = await supabase
                 .from('players')
@@ -183,22 +188,41 @@ export default function JoinPage() {
                     restaurant_id: restaurantId,
                     table_id: selectedTableId,
                     display_name: displayName.trim(),
-                    active_match_id: activeMatch?.id || null,
+                    active_match_id: null,
                     consent_given: true,
                 })
 
             if (insertErr) {
-                setError('Could not join. Please try again.')
+                setError('No se pudo unir. Intenta de nuevo.')
                 setLoading(false)
                 return
             }
 
-            setStep('done')
-            redirectToGame(activeMatch?.id || null)
+            // After registration, show match list
+            await loadMatches(restaurantId)
+            setStep('matches')
         } catch (err) {
-            setError('Something went wrong.')
+            setError('Algo salió mal.')
         }
         setLoading(false)
+    }
+
+    const selectMatch = (matchId: string) => {
+        setStep('done')
+        window.location.href = `/play/${matchId}`
+    }
+
+    const getStatusBadge = (status: string) => {
+        switch (status) {
+            case 'open':
+                return { label: '🟢 Abierto', color: '#22c55e', bg: 'rgba(34,197,94,0.15)' }
+            case 'live':
+                return { label: '🔴 EN VIVO', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' }
+            case 'finished':
+                return { label: '🏁 Finalizado', color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' }
+            default:
+                return { label: status, color: '#94a3b8', bg: 'rgba(148,163,184,0.15)' }
+        }
     }
 
     const filteredTables = tables.filter(t =>
@@ -258,22 +282,22 @@ export default function JoinPage() {
                     <form onSubmit={handleNameSubmit}>
                         <div className="card">
                             <h2 className="card__title" style={{ marginBottom: 'var(--space-lg)' }}>
-                                👋 What&apos;s your name?
+                                👋 ¿Cómo te llamas?
                             </h2>
                             <div className="form-group">
                                 <input
                                     type="text"
                                     className="form-input"
-                                    placeholder="Your name"
+                                    placeholder="Tu nombre"
                                     value={displayName}
                                     onChange={(e) => setDisplayName(e.target.value)}
                                     autoFocus
                                     maxLength={30}
                                 />
-                                <span className="form-hint">This will appear on the leaderboard</span>
+                                <span className="form-hint">Esto aparecerá en el ranking</span>
                             </div>
                             <button type="submit" className="btn btn--primary btn--lg btn--full">
-                                Continue →
+                                Continuar →
                             </button>
                         </div>
                     </form>
@@ -283,14 +307,14 @@ export default function JoinPage() {
                 {step === 'table' && (
                     <div className="card">
                         <h2 className="card__title" style={{ marginBottom: 'var(--space-lg)' }}>
-                            🪑 Select your table
+                            🪑 Selecciona tu mesa
                         </h2>
 
                         <div className="form-group">
                             <input
                                 type="text"
                                 className="form-input"
-                                placeholder="Search tables..."
+                                placeholder="Buscar mesas..."
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                             />
@@ -314,7 +338,7 @@ export default function JoinPage() {
 
                             {filteredTables.length === 0 && !showNewTable && (
                                 <p style={{ color: 'var(--color-text-muted)', textAlign: 'center', padding: 'var(--space-md)' }}>
-                                    No tables found
+                                    No se encontraron mesas
                                 </p>
                             )}
                         </div>
@@ -325,14 +349,14 @@ export default function JoinPage() {
                                 onClick={() => setShowNewTable(true)}
                                 style={{ borderStyle: 'dashed' }}
                             >
-                                + Create new table
+                                + Crear nueva mesa
                             </button>
                         ) : (
                             <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
                                 <input
                                     type="text"
                                     className="form-input"
-                                    placeholder="Table name (e.g., Terraza 3)"
+                                    placeholder="Nombre de la mesa (ej. Terraza 3)"
                                     value={newTableName}
                                     onChange={(e) => setNewTableName(e.target.value)}
                                     autoFocus
@@ -343,7 +367,7 @@ export default function JoinPage() {
                                     onClick={handleCreateTable}
                                     disabled={!newTableName.trim() || loading}
                                 >
-                                    {loading ? '...' : 'Create'}
+                                    {loading ? '...' : 'Crear'}
                                 </button>
                             </div>
                         )}
@@ -353,7 +377,7 @@ export default function JoinPage() {
                             onClick={() => setStep('name')}
                             style={{ marginTop: 'var(--space-md)' }}
                         >
-                            ← Back
+                            ← Atrás
                         </button>
                     </div>
                 )}
@@ -362,7 +386,7 @@ export default function JoinPage() {
                 {step === 'consent' && (
                     <div className="card">
                         <h2 className="card__title" style={{ marginBottom: 'var(--space-lg)' }}>
-                            📋 Almost there!
+                            📋 ¡Casi listo!
                         </h2>
 
                         <div style={{
@@ -374,11 +398,11 @@ export default function JoinPage() {
                             color: 'var(--color-text-secondary)',
                             lineHeight: '1.6'
                         }}>
-                            <p><strong>Privacy Notice</strong></p>
+                            <p><strong>Aviso de privacidad</strong></p>
                             <p style={{ marginTop: 'var(--space-sm)' }}>
-                                We only store your display name and table selection for the duration of the game.
-                                No email, phone number, or device information is collected.
-                                Your data will be anonymized after the match ends.
+                                Solo almacenamos tu nombre y selección de mesa durante el juego.
+                                No se recopila correo, teléfono ni información del dispositivo.
+                                Tus datos se anonimizarán al finalizar el partido.
                             </p>
                         </div>
 
@@ -390,7 +414,7 @@ export default function JoinPage() {
                                 onChange={(e) => setConsentGiven(e.target.checked)}
                             />
                             <label htmlFor="consent">
-                                I accept the privacy terms above and want to join the game
+                                Acepto los términos de privacidad y quiero unirme al juego
                             </label>
                         </div>
 
@@ -401,10 +425,10 @@ export default function JoinPage() {
                         >
                             {loading ? (
                                 <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
-                                    <span className="spinner" /> Joining...
+                                    <span className="spinner" /> Uniéndose...
                                 </span>
                             ) : (
-                                '🎮 Join the Game!'
+                                '🎮 ¡Unirme al juego!'
                             )}
                         </button>
 
@@ -413,16 +437,134 @@ export default function JoinPage() {
                             onClick={() => setStep('table')}
                             style={{ marginTop: 'var(--space-md)' }}
                         >
-                            ← Back
+                            ← Atrás
                         </button>
                     </div>
                 )}
 
-                {/* Step 4: Done */}
+                {/* Step 4: Match Selection */}
+                {step === 'matches' && (
+                    <div>
+                        {isReturningPlayer && (
+                            <p style={{
+                                textAlign: 'center',
+                                color: 'var(--color-text-secondary)',
+                                marginBottom: 'var(--space-lg)',
+                                fontSize: 'var(--font-size-sm)'
+                            }}>
+                                👋 ¡Hola de nuevo, <strong>{displayName}</strong>!
+                            </p>
+                        )}
+
+                        <div className="card">
+                            <h2 className="card__title" style={{ marginBottom: 'var(--space-lg)' }}>
+                                🏟️ Elige un partido
+                            </h2>
+
+                            {matches.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: 'var(--space-xl) 0' }}>
+                                    <p style={{ fontSize: '2rem', marginBottom: 'var(--space-md)' }}>😴</p>
+                                    <p style={{ color: 'var(--color-text-secondary)', marginBottom: 'var(--space-md)' }}>
+                                        No hay partidos disponibles en este momento.
+                                    </p>
+                                    <p style={{ color: 'var(--color-text-muted)', fontSize: 'var(--font-size-sm)' }}>
+                                        Espera a que el administrador abra un partido.
+                                    </p>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-md)' }}>
+                                    {matches.map((match) => {
+                                        const badge = getStatusBadge(match.status)
+                                        return (
+                                            <button
+                                                key={match.id}
+                                                onClick={() => selectMatch(match.id)}
+                                                style={{
+                                                    background: 'var(--color-bg-input)',
+                                                    border: '1px solid var(--color-border)',
+                                                    borderRadius: 'var(--radius-lg)',
+                                                    padding: 'var(--space-lg)',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s ease',
+                                                    textAlign: 'center',
+                                                    width: '100%',
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.currentTarget.style.borderColor = 'var(--color-accent)'
+                                                    e.currentTarget.style.transform = 'translateY(-2px)'
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.currentTarget.style.borderColor = 'var(--color-border)'
+                                                    e.currentTarget.style.transform = 'translateY(0)'
+                                                }}
+                                            >
+                                                {/* Status badge */}
+                                                <span style={{
+                                                    display: 'inline-block',
+                                                    padding: '2px 10px',
+                                                    borderRadius: '999px',
+                                                    fontSize: 'var(--font-size-xs)',
+                                                    fontWeight: 600,
+                                                    color: badge.color,
+                                                    background: badge.bg,
+                                                    marginBottom: 'var(--space-sm)',
+                                                }}>
+                                                    {badge.label}
+                                                </span>
+
+                                                {/* Teams */}
+                                                <div style={{
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    gap: 'var(--space-md)',
+                                                    margin: 'var(--space-sm) 0',
+                                                }}>
+                                                    <span style={{
+                                                        fontSize: 'var(--font-size-lg)',
+                                                        fontWeight: 700,
+                                                        color: 'var(--color-text-primary)',
+                                                    }}>
+                                                        {match.home_team}
+                                                    </span>
+                                                    <span style={{
+                                                        fontSize: 'var(--font-size-sm)',
+                                                        color: 'var(--color-text-muted)',
+                                                        fontWeight: 500,
+                                                    }}>
+                                                        {match.status === 'open' ? 'vs' : `${match.home_score} - ${match.away_score}`}
+                                                    </span>
+                                                    <span style={{
+                                                        fontSize: 'var(--font-size-lg)',
+                                                        fontWeight: 700,
+                                                        color: 'var(--color-text-primary)',
+                                                    }}>
+                                                        {match.away_team}
+                                                    </span>
+                                                </div>
+
+                                                {/* CTA */}
+                                                <span style={{
+                                                    fontSize: 'var(--font-size-sm)',
+                                                    color: 'var(--color-accent)',
+                                                    fontWeight: 600,
+                                                }}>
+                                                    {match.status === 'finished' ? 'Ver resultados →' : 'Entrar al partido →'}
+                                                </span>
+                                            </button>
+                                        )
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Step 5: Done */}
                 {step === 'done' && (
                     <div className="loading-screen">
                         <div className="spinner spinner--lg" />
-                        <p>Welcome, {displayName}! Redirecting to the game...</p>
+                        <p>Redirigiendo al partido...</p>
                     </div>
                 )}
             </div>
